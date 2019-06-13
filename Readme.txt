@@ -13,8 +13,6 @@ $ bash tcga_dea.sh Data
 - 'Analysis' si los datos ya están cargados y sólo se desea efectuar el análisis.
 $ bash tcga_dea.sh Analysis
 
-Los datos cargados se guardan en la carpeta Data.
-
 Los resultados se almacenan en la carpeta Results. Tras ejecutar el análisis deberíamos encontrar:
 - Dos archivos .csv correspondientes al análisis de expresión diferencial y al análisis de enriquecimiento funcional.
 - Un volcano plot
