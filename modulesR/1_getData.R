@@ -27,7 +27,7 @@ colnames(brca_rnaseq.tumour) <- substr(colnames(brca_rnaseq.tumour), 1,12)
 brca_rnaseq.tumour <- brca_rnaseq.tumour[, !duplicated(colnames(brca_rnaseq.tumour))]
 
 ### write out the brca tumour rnaseq data matrix
-save(brca_rnaseq.tumour, file = "Data/brca_rnaseq.RData")
+save(brca_rnaseq.tumour, file = "brca_rnaseq.RData")
 
 
 ## Download Supplementary data and import Table 1
@@ -40,6 +40,6 @@ sample_data <- read_excel("nature11412-s2/Supplementary Tables 1-4.xls", sheet =
 unlink("nature11412-s2",recursive = T,force = T)
 rm(temp)
 
-save(sample_data, file="Data/sample_data.RData")
+save(sample_data, file="sample_data.RData")
 
 unlink("20160128*",force = T)
