@@ -1,0 +1,353 @@
+---
+title: "TCGA Analysis"
+author: "Javier Moreno Venegas"
+date: "12/1/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introducción  
+
+El objetivo de este trabajo es aplicar varias de las técnicas aprendidas durante en las asignaturas Herramientas y Algoritmos en Bioinformática, Minería de Datos y Aprendizaje Computacional. Emplearemos por tanto herramientas de aprendizaje supervisado y no supervisado y análisis de supervivencia.
+
+Aquí se estudian los datos procedentes del análisis de expresión diferencial de genes de muestras de los subtipos de cáncer de mama triple-negativo frente a Luminal A. La información de las muestras procede del TCGA. La extracción del TCGA y el análisis se realiza mediante un flujo de trabajo que nos proporciona la matriz de expresión de genes más significativos que ha sido utilizada para elaborar este informe.
+
+## Cargar y preparar los datos  
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+library(dplyr)
+load('sample_data.RData')
+#load('brca_rnaseq-tnbc.RData')
+#load('brca_rnaseq-luminal.RData')
+
+#Cargamos las muestras clinicas pertenecientes a pacientes triple negativo y luminal procedentes de TCGA.
+tnbc_samples <- sample_data %>% dplyr::filter(`ER Status` == "Negative" & `PR Status` == "Negative" & `HER2 Final Status` == "Negative" & `PAM50 mRNA` != "Luminal A")
+luminal_samples <- sample_data %>% dplyr::filter(`PAM50 mRNA` == "Luminal A")
+mydata <- rbind(tnbc_samples, luminal_samples)
+mydata <- mydata %>% select(`Complete TCGA ID`, `OS event`, `OS Time`)
+mydata <- mydata %>% mutate(`OS event`= as.numeric(`OS event`), `OS Time`= as.numeric(`OS Time`)) 
+
+#Cargamos el objeto voom obtenido en el analisis de expresion diferencial y cargar la matriz de expresion diferencial. El objeto voom presenta una matriz numerica con los valores de expresion genetica nomalizados en escala logCPM (log2 counts per million).
+library(limma)
+load('voom_object.RData')
+
+#Cargar los genes significativos. El archivo csv procede del analisis de expresion diferencial realizado previamente.
+sigGenes <- as.character(read.csv('TNBCvsLum_dea.csv'
+                                  , header = TRUE, sep = ',', quote = '"')$Gene)
+
+#Extraemos la matriz de datos de expresion diferencial del objeto voom y la filtramos para quedarnos con los genes significativos.
+expr <- v$E[sigGenes,]
+expr <- t(expr)
+ID <- row.names(expr)
+expr <- as.data.frame(expr, row.names = 1:length(row.names(expr)))
+
+#Hacemos un inner join de la matriz de expresion diferencial y las muestras de pacientes.
+expr <- mutate(expr, `Complete TCGA ID` = ID)
+mydata <- inner_join(expr, mydata)
+
+tnbc_or_luminal <- function(x){
+  if(x %in% tnbc_samples$`Complete TCGA ID`){
+    return('TNBC')
+  }else if(x %in% luminal_samples$`Complete TCGA ID`){
+    return('LUM')
+  }
+}
+real_label = as.factor(unlist(lapply(mydata$`Complete TCGA ID`, tnbc_or_luminal)))
+mydata <- mutate(mydata, real_label = real_label)
+data.table::setnames(mydata, "Complete TCGA ID", "ID")
+data.table::setnames(mydata, "OS Time", "time")
+data.table::setnames(mydata, "OS event", "status")
+```
+
+## Clustering de los datos de expresión diferencial  
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+library(gplots)
+library(factoextra)
+library(pROC)
+
+#Visualizamos la matriz de expresion mediante un heatmap.
+heatmap.2(scale(expr[,-127]), col = redgreen(75), trace = 'none', density.info = 'none')
+
+#Se observan a simple vista dos grupos diferenciados. Hacemos un clustering con k=2 empleando el m??todo jer??rquico y el m??todo de kmeans.
+set.seed(123)
+h.clust <- hcut(scale(expr[,-127]))
+k.clust <- kmeans(scale(expr[,-127]), 2)
+
+#Visualizamos el dendograma y el resultado del clustering.
+fviz_dend(h.clust, cex = 0.2) +
+  geom_hline(yintercept = 150, linetype = "dashed") +
+  labs(title = "Herarchical clustering",
+       subtitle = "Euclidean distance. Complete linkage. K=2")
+
+fviz_cluster(h.clust, geom = 'point', main = "Hierarchical clustering")
+fviz_cluster(k.clust, expr[,-127],geom = 'point', main = "kmeans clustering")
+
+#Comprobamos el resultado de lo diferentes clusterings comparando con los fenotipos reales.
+table(h.clust$cluster, mydata$real_label)
+table(k.clust$cluster, mydata$real_label)
+auc(mydata$real_label, h.clust$cluster)
+auc(mydata$real_label, k.clust$cluster)
+
+#Observamos que el metodo kmeans obtiene un resultado ligeramente superior por tanto a??adimos este resultado al conjunto de datos para el analisis de supervivencia.
+mydata <- mutate(mydata, predicted_label = as.factor(k.clust$cluster))
+```
+
+### Analisis de supervivencia de los clusters obtenidos
+
+En base al clustering obtenido procedemos a realizar un análisis de supervivencia. Para ello tomamos un marco temporal de 3 años.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+library(survival)
+library(survminer)
+set.seed(123)
+ggsurvplot(survfit(Surv(time ,status) ~ predicted_label, data = dplyr::filter(mydata, time <= 1100)), conf.int = FALSE, censor = TRUE, main = "Survival", pval = TRUE, xlab="Time", legend.title = 'Kaplan-Meier curve by predicted phenotype', legend.labs = c('Predicted TNBC', 'Predicted LUM'), palette = "simpsons")
+```  
+
+Visualizando las curva de supervivencia puede observarse una clara diferencia entre el grupo predicho como triple-negativo y el predicho como Luminal, presentando este último mayor probabilidad de supervivencia de forma muy significativa.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+set.seed(123)
+summary(coxph(Surv(time ,status) ~ predicted_label, data = dplyr::filter(mydata, time <= 1100)))
+ggcoxzph(cox.zph(coxph(Surv(time ,status) ~ predicted_label, data = dplyr::filter(mydata, time <= 1100))))
+```  
+
+El grupo 2 es el que se asocia al Luminal A. Como puede observarse en el modelo de Cox obtenido el grupo 2 presenta un HR bajo, inferior a 1, lo que implica un riesgo notablemente menor en comparación con el otro grupo asociado a triple-negativo y por tanto mayor probabilidad de supervivencia. El p-valor asociado es bastante significativo y si realizamos el test de proporcionalidad de riesgos comprobamos que los coeficientes beta no se hallan afectados de forma significativa por el tiempo (elevado valor p del test). 
+Verificamos de este modo que nuestro algortimo de clustering ha agrupado de manera correcta las muestras.
+
+## Busqueda de firma genetica para determinar fenotipo  
+
+Procedemos ahora a buscar una firma genética para poder predecir el fenotipo haciendo uso del mínimo número de variables posibles.  
+
+### Preparación de los datos  
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+set.seed(123)
+x <- mydata[,1:126]
+y <- mydata$real_label
+train <- sample(1:nrow(expr), size = 280)
+test <- (-train)
+ytest <- y[test]
+```  
+
+### Modelo lasso  
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+library(glmnet)
+library(caret)
+
+#Obtención de la mejor lambda mediante cross-validation.
+set.seed(123)
+bestlambda <- cv.glmnet(as.matrix(x[train,]), (y[train]=="TNBC")*1, family="binomial",type.measure = "auc")$lambda.min
+
+lasso.mod <- glmnet(as.matrix(x[train, ]), y[train] ,family = "binomial", alpha = 1)
+predict(lasso.mod, type = "coefficients", s = bestlambda)
+lasso.pred <- as.factor(predict(lasso.mod, s = bestlambda
+                      , newx = as.matrix(x[test,]), type = "class"))
+
+confusionMatrix(y[test], lasso.pred)
+pROC::auc(y[test], (lasso.pred=='TNBC')*1)
+```  
+
+### Modelo ridge  
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+set.seed(123)
+
+ridge.mod <- glmnet(as.matrix(x[train, ]), y[train] ,family = "binomial", alpha = 0)
+predict(ridge.mod, type = "coefficients", s = bestlambda)
+
+ridge.pred <- as.factor(predict(lasso.mod, s = bestlambda
+                      , newx = as.matrix(x[test,]), type = "class"))
+
+confusionMatrix(y[test], ridge.pred)
+pROC::auc(y[test], (ridge.pred=='TNBC')*1)
+```  
+  
+El modelo lasso y el modelo ridge obtienen un AUC similar. De momento nos quedamos con el modelo lasso puesto que utiliza un n??mero mucho menor de variables.  
+  
+### Modelos con caret  
+
+Buscaremos ahora mejores valores de AUC consruyendo modelos m??s complejos con redes neuronales y SVM. Para ello, haremos uso del paquete caret.  
+
+#### Validación interna  
+
+Creamos una variable de control con 10-fold cross validation para el entrenamiento de los modelos.    
+```{r, echo=TRUE}
+set.seed(123)
+control <- trainControl(method = 'cv', number = 10, classProbs = TRUE, summaryFunction = twoClassSummary)
+model.train.data <- cbind(x[train,],class = y[train])
+```  
+
+#### Búsqueda eficiente del mejor modelo  
+
+Las siguientes funciones son reutilizadas del trabajo final de la asignatura Minería de datos. Con ellas implemento una búsqueda eficiente del mejor modelo dados un conjunto de parámetros de entrada.  
+
+```{r, echo=TRUE}
+SFS <- function(algoritmo, control, datos, variables, n){
+  formula <- as.formula('class ~ 1')
+  aux.variables <- variables
+  bestAUC <- 0
+  best.fit <- NULL
+  i <- 1
+  while (i <= n){
+    set.seed(8)
+    New.fit <- SearchBestModel(ComputeModels(algoritmo = algoritmo, control = control, datos = datos, variables = aux.variables, formula.inicial = formula))
+    if(bestAUC >= max(New.fit$results$ROC)){
+      return(best.fit)
+    }else{
+      bestAUC <- max(New.fit$results$ROC)
+      best.fit <- New.fit
+      if(i > 1){  
+        var.added <- as.character(best.fit$terms[[3]][length(best.fit$terms[[3]])])
+      }else{
+        var.added <- as.character(best.fit$terms[[3]])
+      }
+      formula <- update(formula, as.formula(paste('~.+',var.added)))
+      aux.variables <- BorrarElemento(aux.variables, var.added)
+      i <- i + 1
+    }
+  }
+  return(best.fit)
+}
+
+BorrarElemento <- function(vector, element){
+  i <- 1
+  while(i <= length(vector)){
+    if(vector[i]==element){
+      return(vector[-i])
+    }
+    i <- i+1
+  }
+}
+
+ComputeModels <- function(algoritmo, control, datos, variables, formula.inicial){
+  res <- list()
+  for(v in variables){
+    new.formula <- update(formula.inicial, as.formula(paste('~ . +',v)))
+    set.seed(8)
+    fit <- train(new.formula, datos, method = algoritmo, trControl = control, metric = 'ROC')
+    res <- c(res, list(fit))
+  }
+  return(res)
+}
+
+SearchBestModel <- function(Models.list){
+  best.model <- Models.list[[1]]
+  for(model in Models.list){
+    if(max(model$results$ROC) > max(best.model$results$ROC)){
+      best.model <- model
+    }
+  }
+  return(best.model)
+}
+```  
+
+#### SVM  
+
+Aplico ahora SFS a la búsqueda eficiente del mejor modelo con máquinas de soporte vectorial lineales.  
+
+```{r, echo=TRUE}
+#best.svm.model <- SFS(algoritmo = 'svmLinearWeights', control = control, datos = model.train.data, variables = sigGenes, n = 126)
+#save(best.svm.model, file = 'best_svm_model.RData')
+load('best_svm_model.RData')
+
+#AUC obtenido en la validación interna del mejor modelo elegido.
+max(best.svm.model$results$ROC)
+
+#Predicciones utilizadon los datos reservados para test.
+svm.preds <- predict(best.svm.model, newdata = x[test,])
+confusionMatrix(y[test], svm.preds)
+pROC::auc(y[test], as.numeric(svm.preds))
+best.svm.model$terms[[3]]
+```  
+
+#### Redes neuronales  
+
+Ejecutar la función anterior de nuevo con redes neuronales resultaba demasiado costoso computacionalmente. Puesto que el resultado obtenido por el clasificador era bastante bueno, he optado por construir ahora un modelo de redes neuronales con las variables selecionadas anteriormente por el modelo de SVM y otro con las variables seleccionadas por el modelo lasso para comprobar si se mejoran los resultados.  
+
+```{r, echo=TRUE}
+#Genes selecionados por modelo SVM
+
+#nnet.model1 <- train(class ~ ESR1 + IGFALS + TPRG1 + LRG1 + MSLN
+#                    , model.train.data, method='nnet', trControl=control, metric="ROC")
+#save(nnet.model1, file='nnet_model1.RData')
+load('nnet_model1.RData')
+
+nnet.preds1 <- predict(nnet.model1, newdata = x[test,])
+confusionMatrix(y[test], nnet.preds1)
+
+# AUC obtenido en la validaci??n interna del mejor modelo elegido.
+max(nnet.model1$results$ROC)
+
+# Predicciones utilizado los datos reservados para test.
+pROC::auc(y[test], as.numeric(nnet.preds1))
+
+#Genes seleccionados por modelo lasso
+
+#nnet.model2 <- train(class ~ ESR1 + AGR3
+#                   , model.train.data, method='nnet', trControl=control, metric="ROC")
+#save(nnet.model2, file='nnet_model2.RData')
+load('nnet_model2.RData')
+nnet.preds2 <- predict(nnet.model2, newdata = x[test,])
+confusionMatrix(y[test], nnet.preds2)
+
+# AUC obtenido en la validaci??n interna del mejor modelo elegido.
+max(nnet.model2$results$ROC)
+
+# Predicciones utilizado los datos reservados para test.
+pROC::auc(y[test], as.numeric(nnet.preds2))
+```  
+
+Se sigue obteniendo un buen resultado aunque no se mejora el obtenido por el modelo elegido por SVM. En el siguiente paso buscaremos relaciones entre los genes seleccionados por los modelos y el fenotipo.  
+
+### Estudio de las variables seleccionadas 
+
+Busquemos ahora la relación entre la expresión de estos genes y el fenotipo (TNBC/Luminal A).  
+
+```{r, echo=TRUE}
+selected.genes = c('ESR1','IGFALS','TPRG1','LRG1','MSLN','AGR3')
+summary(mydata[selected.genes])
+
+ggplot(data=mydata, aes(real_label, ESR1)) + geom_violin(fill = "red")
+ggplot(data=mydata, aes(real_label, ESR1)) + geom_boxplot(fill = "red", varwidth = TRUE)
+
+ggplot(data=mydata, aes(real_label, IGFALS)) + geom_violin(fill = "blue")
+ggplot(data=mydata, aes(real_label, IGFALS)) + geom_boxplot(fill = "blue", varwidth = TRUE)
+
+ggplot(data=mydata, aes(real_label, TPRG1)) + geom_violin(fill = "blue")
+ggplot(data=mydata, aes(real_label, TPRG1)) + geom_boxplot(fill = "blue", varwidth = TRUE)
+
+ggplot(data=mydata, aes(real_label, LRG1)) + geom_violin(fill = "blue")
+ggplot(data=mydata, aes(real_label, LRG1)) + geom_boxplot(fill = "blue", varwidth = TRUE)
+
+ggplot(data=mydata, aes(real_label, MSLN)) + geom_violin(fill = "blue")
+ggplot(data=mydata, aes(real_label, MSLN)) + geom_boxplot(fill = "blue", varwidth = TRUE)
+
+ggplot(data=mydata, aes(real_label, AGR3)) + geom_violin(fill = "red")
+ggplot(data=mydata, aes(real_label, AGR3)) + geom_boxplot(fill = "red", varwidth = TRUE)
+```  
+
+A simple vista podemos observar en las gráficas que los genes ESR1 y AGR3 son los que presentan mayores diferencias a nivel de expresión en relación al fenotipo. Ambos se encuentran más expresados en los casos de fenotipo Luminal A y menos expresados en los casos de TNBC. Si indagamos en la literatura acerca de estos dos genes y su relación con el cáncer de mama podemos encontrar varias conclusiones que confirman el resultado obtenido:  
+
+#### ESR1  
+
+En el artículo de Clatot F. et al. (2017)[1] encontramos dos conclusiones interesantes. Por un lado, que las mutaciones de ESR1 se asocian a un elevado número de casos de cáncer de mama (70-75%) y se presenta como un marcador de detección temprana del cáncer. Por el otro lado, aunque la elevada expresión se asocie significativamente a la presencia de cáncer, al parecer aquellos pacientes que presentan amplificación de ESR1 presentan un mejor pronóstico de supervivencia al recibir tratamiento hormonal que aquellos que no lo presentan lo que concuerda con los resultados en nuestro análisis al mostrar el fenotipo Luminal A una mayor probabilidad de supervivencia.  
+
+#### AGR3  
+
+En el artículo de Garczyk S et al. (2015)[2], una elevada expresión de AGR3 se asocia a la presencia de cáncer de mama. En este caso se asocia de manera significativa al receptor de estrógeno alfa y a tumores poco severos. Esto concuerda con la mayor expresión en Luminal A, el fenotipo más leve. Además en el artículo es presentado como un potencial biomarcador tanto para el pronóstico de cáncer de mama como para su detección temprana en muestras de sangre.  
+
+
+
+## Bibliografía  
+
+1. Clatot F, Augusto L, Di Fiore F. ESR1 mutations in breast cancer. Aging (Albany NY). 2017; 9:3-4. https://doi.org/10.18632/aging.101165  
+
+2. Garczyk S, von Stillfried S, Antonopoulos W, Hartmann A, Schrauder MG, Fasching PA, et al. (2015) AGR3 in Breast Cancer: Prognostic Impact and Suitable Serum-Based Biomarker for Early Cancer Detection. PLoS ONE 10(4): e0122106. https://doi.org/10.1371/journal.pone.0122106  
+
+
+
