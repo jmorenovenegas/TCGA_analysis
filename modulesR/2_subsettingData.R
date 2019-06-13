@@ -3,8 +3,8 @@ loadpkg("dplyr")
 
 ## Load data from module 1
 
-load("Data/brca_rnaseq.RData")
-load("Data/sample_data.RData")
+load("brca_rnaseq.RData")
+load("sample_data.RData")
 
 
 #### Get the breast cancer subtypes data
@@ -23,7 +23,7 @@ brca_rnaseq.tnbc <- brca_rnaseq.tumour[, which(colnames(brca_rnaseq.tumour) %in%
 
 brca_rnaseq.luminal <- brca_rnaseq.tumour[, which(colnames(brca_rnaseq.tumour) %in% luminal_barcodes)]
 
-save(brca_rnaseq.luminal, file = "Data/brca_rnaseq-luminal.RData")
-save(brca_rnaseq.tnbc, file = "Data/brca_rnaseq-tnbc.RData")
+save(brca_rnaseq.luminal, file = "brca_rnaseq-luminal.RData")
+save(brca_rnaseq.tnbc, file = "brca_rnaseq-tnbc.RData")
 
 
