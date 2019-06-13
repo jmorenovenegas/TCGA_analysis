@@ -12,8 +12,8 @@ if (length(args)==0) {
 
 
 # Load the expression data
-load("Data/brca_rnaseq-luminal.RData")
-load("Data/brca_rnaseq-tnbc.RData")
+load("brca_rnaseq-luminal.RData")
+load("brca_rnaseq-tnbc.RData")
 
 source("modulesR/0_loadLibraries.R")
 loadpkg("dplyr")
@@ -51,7 +51,7 @@ dge <- calcNormFactors(dge)
 v <- voom(dge[isexpr,], design, plot=FALSE)
 
 # We save the voom object to use it lately. 
-save(v, file = 'Data/voom_object.RData')
+save(v, file = 'voom_object.RData')
 
 # find genes differentially expression between the two groups of samples combined above
 fit <- lmFit(v, design)
